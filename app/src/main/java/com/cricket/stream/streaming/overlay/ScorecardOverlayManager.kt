@@ -23,6 +23,9 @@ class ScorecardOverlayManager(private val context: Context) {
     private var webView: WebView? = null
     private var surfaceTexture: android.graphics.SurfaceTexture? = null
     private var surface: Surface? = null
+    private var virtualDisplay: android.hardware.display.VirtualDisplay? = null
+    private var overlayWidth: Int = 0
+    private var overlayHeight: Int = 0
 
     /** Configuration for the overlay position, size and visibility in stream */
     data class ScorecardConfig(
@@ -49,7 +52,8 @@ class ScorecardOverlayManager(private val context: Context) {
         fun withUrl(url: String?): ScorecardConfig = copy(url = url)
     }
 
-    var config = ScorecardConfig.default(0.12f) private set
+    var config: ScorecardConfig = ScorecardConfig.default(0.12f)
+        private set
 
     var onOverlayError: (String) -> Unit = {}
 
@@ -170,7 +174,7 @@ class ScorecardOverlayManager(private val context: Context) {
 
     /** Take screenshot snapshot of current score card content for debugging / preview */
     fun takeSnapshot(): Bitmap? = runCatching {
-        Bitmap.createBitmap(width/2, (height*config.scaleY).toInt(), Bitmap.Config.ARGB_8888)  
+        Bitmap.createBitmap(overlayWidth, (overlayHeight * config.scaleY).toInt(), Bitmap.Config.ARGB_8888)  
     }.getOrNull()
 
     companion object {

@@ -1,5 +1,6 @@
 package com.cricket.stream.di
 
+import android.content.Context
 import org.koin.android.ext.koin.androidContext
 import org.koin.dsl.module
 import com.cricket.stream.streaming.StreamEngine
@@ -10,11 +11,11 @@ import com.cricket.stream.streaming.overlay.ScorecardOverlayManager
 val appModule = module {
 
     // Singletons - created once per app lifecycle
-    single { CricketApplication.context() } // application context
+    single { androidContext() }
     
     // Stream engine
-    factory { (width: Int, height: Int, fps: Int) -> 
-        StreamEngine(get(), width, height, fps).apply{ init() }
+    factory { (width: Int, height: Int, fps: Int) ->
+        StreamEngine(get(), StreamEngine.StreamConfig(width = width, height = height, fps = fps)).apply { init() }
     }
     
     // USB Camera manager for UVC capture cards

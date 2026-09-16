@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.os.Build
 import android.util.Log
 
 /**
@@ -23,28 +24,31 @@ class CameraManager private constructor(
     var onError: ((String) -> Unit)? = null
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
-    private lateinit var permissionPendingIntent: PendingIntent
     private var connectedDevice: UsbDevice? = null
     private var receiverRegistered = false
+    private lateinit var pendingIntent: PendingIntent
 
     /** Receiver for USB attach/detach events and permission results */
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent) {
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    handleDeviceEvent(
-                        intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE),
-                        connected = true
-                    )
+                    @Suppress("DEPRECATION")
+                    val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                    handleDeviceEvent(device, connected = true)
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    handleDeviceEvent(
-                        intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE),
-                        connected = false
-                    )
+                    @Suppress("DEPRECATION")
+                    val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                    handleDeviceEvent(device, connected = false)
                 }
                 USB_PERMISSION_ACTION -> {
-                    val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                    @Suppress("DEPRECATION")
+                    val device = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                    } else {
+                        intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                    }
                     if (device != null && intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
                         connectedDevice = device
                         Log.i(TAG, "USB permission granted for: ${device.deviceName}")
@@ -56,42 +60,57 @@ class CameraManager private constructor(
                 }
             }
         }
+    }
 
-        /** Check if a USB device is a UVC-compatible capture card */
-        private fun isUvcCompatible(device: UsbDevice): Boolean {
-            for (i in 0 until device.interfaceCount) {
-                val intf = device.getInterface(i)
-                // Video interface subclass=2, protocol=1 matches standard UVC
-                if ((intf.configurationClass == 239 && intf.protocol == 1) ||
-                    (intf.subclass == 2 && intf.protocol == 1)) {
-                    return true
-                }
+    /** Check if a USB device is a UVC-compatible capture card */
+    private fun isUvcCompatible(device: UsbDevice): Boolean {
+        for (i in 0 until device.interfaceCount) {
+            val intf = device.getInterface(i)
+            val isClass = intf.interfaceClass == 14
+            val isSubclass = intf.interfaceSubclass == 2
+            val isProtocol = intf.interfaceProtocol == 1
+            if (isClass && isSubclass && isProtocol) {
+                return true
             }
-            return false
         }
+        return false
+    }
 
-        /** Request USB permission from the user via system dialog */
-        private fun requestPermission(device: UsbDevice) {
-            permissionPendingIntent = PendingIntent.getBroadcast(
-                context,
-                0,
-                Intent(USB_PERMISSION_ACTION).apply {
-                    putParcelableExtra(UsbManager.EXTRA_DEVICE, device)
-                },
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
-            usbManager.requestPermission(device, permissionPendingIntent)
+    /** Request USB permission from the user via system dialog */
+    private fun requestPermission(device: UsbDevice) {
+        pendingIntent = PendingIntent.getBroadcast(
+            context,
+            0,
+            Intent(USB_PERMISSION_ACTION).apply {
+                @Suppress("DEPRECATION")
+                putExtra(UsbManager.EXTRA_DEVICE, device)
+            },
+            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        usbManager.requestPermission(device, pendingIntent)
+    }
+
+    private fun registerReceiver() {
+        try {
+            context.registerReceiver(usbReceiver, IntentFilter().apply {
+                addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+                addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+                addAction(USB_PERMISSION_ACTION)
+            })
+            receiverRegistered = true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to register USB receiver", e)
         }
+    }
 
-        private fun handleDeviceEvent(device: UsbDevice?, connected: Boolean) {
-            device ?: return
-            if (isUvcCompatible(device)) {
-                if (connected && !usbManager.hasPermission(device)) {
-                    requestPermission(device)
-                } else if (!connected && device == connectedDevice) {
-                    connectedDevice = null
-                    onDeviceDisconnected?.invoke()
-                }
+    private fun handleDeviceEvent(device: UsbDevice?, connected: Boolean) {
+        device ?: return
+        if (isUvcCompatible(device)) {
+            if (connected && !usbManager.hasPermission(device)) {
+                requestPermission(device)
+            } else if (!connected && device == connectedDevice) {
+                connectedDevice = null
+                onDeviceDisconnected?.invoke()
             }
         }
     }
@@ -123,8 +142,10 @@ class CameraManager private constructor(
 
     /** Called from Activity lifecycle to unregister USB receiver */
     fun onDestroy() {
-        try { context.unregisterReceiver(usbReceiver) } catch (e: Exception) {}
-        receiverRegistered = false
+        if (receiverRegistered) {
+            try { context.unregisterReceiver(usbReceiver) } catch (e: Exception) {}
+            receiverRegistered = false
+        }
     }
 
     companion object {

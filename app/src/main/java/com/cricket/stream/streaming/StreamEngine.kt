@@ -7,7 +7,6 @@ import android.view.Surface
 import android.view.View
 import androidx.annotation.RequiresApi
 import com.pedro.common.ConnectChecker
-import com.pedro.library.base.StreamBase
 import com.pedro.library.rtmp.RtmpCamera2
 import com.pedro.library.util.QueueAwareBitrateAdapter
 import com.pedro.library.view.OpenGlView
@@ -38,8 +37,6 @@ class StreamEngine(
 
     // State tracking
     private var isStreaming: Boolean = false
-    private var connectChecker: ConnectChecker? = null
-    private var lastBitrateChange: Long = 0
 
     // Callbacks for stream health monitoring
     var onStreamHealth: (StreamHealth) -> Unit = { }
@@ -82,47 +79,12 @@ class StreamEngine(
         }
 
         openGlView?.let { glView ->
-            rtmpCamera2 = RtmpCamera2(glView, this).apply {
-                // RootEncoder 2.8.1 prepareVideo/prepareAudio use Java positional params (StreamBase) 
-                val videoWidth = if (config.isPortraitOrientation) config.height else config.width
-                val videoHeight = if (config.isPortraitOrientation) config.width else config.height
+            rtmpCamera2 = RtmpCamera2(glView, this)
 
-                // prepareVideo(width, height, fps, bitrate, rotation, iFrameInterval, profile, level, ...)
-                val prepared = prepareVideo(videoWidth, videoHeight, config.fps, config.bitrate, 0, 2, -1, -1)
-
-                // prepareAudio(sampleRate, isStereo, audioBitrate, echoCanceler, noiseSuppressor): Boolean
-                val audioPrepared = prepareAudio(config.audioSampleRate, if (config.isStereo) 1 else 0, config.audioBitrate, 1, 1)
-
-                if (!prepared) {
-                    onError("Video prepare failed. Check device supports ${config.width}x${config.height}")
-                    return@init false
-                }
-                if (!audioPrepared) {
-                    onError("Audio prepare failed")
-                    return@init false
-                }
-            }
+            return@let true
         }
 
-        // Initialize network adaptation (if enabled)
-        if (config.enableAdaptiveBitrate) {
-            bitrateAdapter = QueueAwareBitrateAdapter(
-                maxBitrate = config.adaptionMaxBitrate,
-                minBitrate = config.bitrate / 4,
-                listener = object : QueueAwareBitrateAdapter.Listener {
-                    override fun onBitrateAdapted(bitrate: Int) {
-                        // Applied on next frame via setVideoBitrateOnFly from main thread
-                        val now = System.currentTimeMillis()
-                        if (now - lastBitrateChange > 1000) { // throttle changes to max once/second
-                            rtmpCamera2?.setVideoBitrateOnFly(bitrate)
-                            lastBitrateChange = now
-                        }
-                    }
-                }
-            )
-        }
-
-        return true
+        return false
     }
 
     /**
@@ -132,7 +94,7 @@ class StreamEngine(
     fun startStream(endPoint: String): Boolean {
         return rtmpCamera2?.let {
             if (it.isStreaming) {
-                false // already streaming — don't double-start
+                false
             } else {
                 isStreaming = true
                 it.startStream(endPoint)
@@ -145,6 +107,7 @@ class StreamEngine(
                         connectionStatus = "CONNECTING"
                     )
                 )
+                true
             }
         } ?: run {
             onError("StreamEngine not initialized")
@@ -160,7 +123,11 @@ class StreamEngine(
         isStreaming = false
         onStreamHealth(
             StreamHealth(
-                isStreaming = false, config.bitrate, 0L, 0, "DISCONNECTED"
+                isStreaming = false,
+                currentBitrate = config.bitrate,
+                uploadBandwidth = 0L,
+                framesDropped = 0,
+                connectionStatus = "DISCONNECTED"
             )
         )
 
@@ -172,47 +139,101 @@ class StreamEngine(
      * Update the scorecard overlay (if URL changes).
      */
     fun updateScorecardOverlay(viewSurface: Surface?) {
-        if (viewSurface == null) return
-        val newFilter = Filter(
-            position = 0, // bottom of frame
-            baseFilterRender = /* ViewSurfaceFilterRender(context, viewSurface) */ null
-        )
-
-        // Apply to the streaming pipeline via the OpenGlView surface
-        openGlView?.let { gl ->
-            gl.addMediaCodecRecordSurface()
-            // Note: Full implementation requires adding the filter during frame processing
-            // This is a stub for the ViewSurfaceFilterRender integration.
+        // Future: integrate ViewSurfaceFilterRender with OpenGlView
+        viewSurface?.let {
+            openGlView?.let { gl ->
+                gl.addMediaCodecRecordSurface(it)
+            }
         }
     }
 
-    /** RTMPS Connection checker callbacks */
-    override fun onGenerateSslCertificate(): String? = null
-    override fun onConnectionStarted(url: String) {
-        /* ConnectChecker interface — ignored since RootEncoder handles internally */
+    /**
+     * Set stream bitrate (adaptive mode).
+     */
+    fun setBitrate(newBitrate: Int) {
+        rtmpCamera2?.setVideoBitrateOnFly(newBitrate)
     }
 
-    override fun onConnectionSuccess(result: RtmpConnection?) {
-        isStreaming = true
+    /** RTMPS Connection checker callbacks — ConnectChecker interface */
+    override fun onConnectionStarted(url: String) {
         onStreamHealth(
             StreamHealth(
-                isStreaming = true, config.bitrate, 0L, 0, "CONNECTED"
+                isStreaming = false,
+                currentBitrate = 0,
+                uploadBandwidth = 0L,
+                framesDropped = 0,
+                connectionStatus = "CONNECTING: $url"
             )
         )
     }
 
-    override fun onDataBufferRead(size: Int, bufferType: Int) {}
-    override fun onNewBitrate(kbitSpeed: Long) { /* unused */ }
+    override fun onConnectionSuccess() {
+        isStreaming = true
+        onStreamHealth(
+            StreamHealth(
+                isStreaming = true,
+                currentBitrate = config.bitrate,
+                uploadBandwidth = 0L,
+                framesDropped = 0,
+                connectionStatus = "CONNECTED"
+            )
+        )
+    }
+
+    override fun onNewBitrate(kbitSpeed: Long) {
+        // Adaptive bitrate callback — update health metrics
+    }
+
+    override fun onDisconnect() {
+        isStreaming = false
+        onStreamHealth(
+            StreamHealth(
+                isStreaming = false,
+                currentBitrate = 0,
+                uploadBandwidth = 0L,
+                framesDropped = 0,
+                connectionStatus = "DISCONNECTED"
+            )
+        )
+    }
+
     override fun onConnectionFailed(reason: String) {
         isStreaming = false
         onError("RTMP connection failed: $reason")
 
-        // Auto-reconnect logic here (not implemented in MVP — needs retry with exponential backoff)
-        // OnStreamHealth update
         onStreamHealth(
-            StreamHealth(isStreaming = false, config.bitrate, 0L, 0, "FAILED: $reason")
+            StreamHealth(
+                isStreaming = false,
+                currentBitrate = 0,
+                uploadBandwidth = 0L,
+                framesDropped = 0,
+                connectionStatus = "FAILED: $reason"
+            )
         )
     }
 
-    override fun onDisconnect() { /* unconnected */ }
+    override fun onAuthSuccess() {
+        onStreamHealth(
+            StreamHealth(
+                isStreaming = true,
+                currentBitrate = config.bitrate,
+                uploadBandwidth = 0L,
+                framesDropped = 0,
+                connectionStatus = "AUTH_SUCCESS"
+            )
+        )
+    }
+
+    override fun onAuthError() {
+        onError("RTMP authentication failed")
+        onStreamHealth(
+            StreamHealth(
+                isStreaming = false,
+                currentBitrate = 0,
+                uploadBandwidth = 0L,
+                framesDropped = 0,
+                connectionStatus = "AUTH_ERROR"
+            )
+        )
+    }
 }

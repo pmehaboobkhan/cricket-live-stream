@@ -55,7 +55,7 @@ fun MainScreen(
         streamEngine.init()
     }
 
-    androidx.compose.material.Scaffold(
+    Scaffold(
         topBar = {
             TopAppBar(
                 title = { Text("Cricket Live Stream", fontWeight = FontWeight.Bold) },
@@ -79,7 +79,7 @@ fun MainScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .weight(0.5f),
-                    elevation = MaterialTheme.shapes.medium.cornerSize
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
                 ) {
                     Box(
                         modifier = Modifier
