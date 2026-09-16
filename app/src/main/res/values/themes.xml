@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.CricketStream" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#E53935</item>
+        <item name="colorPrimaryVariant">#B71C1C</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorSecondary">#FFC107</item>
+        <item name="android:statusBarColor">#121212</item>
+    </style>
+</resources>
